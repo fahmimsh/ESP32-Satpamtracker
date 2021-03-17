@@ -1,0 +1,553 @@
+#include <Arduino.h>
+#include <lvgl.h>
+#include <TFT_eSPI.h>
+#include <Wire.h>
+#include <SPIFFS.h>
+#include <PN532_I2C.h>
+#include <PN532.h>
+#include <NfcAdapter.h>
+
+#define LVGL_TICK_PERIOD 60
+PN532_I2C pn532_i2c(Wire);
+NfcAdapter nfc = NfcAdapter(pn532_i2c);
+//PN532 nfc(pn532_i2c);
+
+//Ticker tick; /* timer for interrupt handler */
+TFT_eSPI tft = TFT_eSPI(); /* TFT instance */
+static lv_disp_buf_t disp_buf;
+static lv_color_t buf[LV_HOR_RES_MAX * 10];
+
+//Screen Function
+void MenuScreen();
+void WiFiScreen();
+void TrackingScreen();
+void SettingsScreen();
+void PeminjamanScreen();
+void LoginScreen();
+void LogoutScreen();
+
+//Callback Function
+static void Menu_cb(lv_obj_t* obj, lv_event_t event);
+static void WiFi_cb(lv_obj_t* obj, lv_event_t event);
+static void Login_cb(lv_obj_t* obj, lv_event_t event);
+
+//Object Function
+void showObjTop();
+void showObjMain();
+void showObjBottom();
+
+/**********************
+*  STATIC VARIABLES
+**********************/
+static lv_indev_t * kb_indev;
+
+//Font declaration
+extern lv_font_t FontKu14;
+extern lv_font_t Symbol12;
+//extern lv_font_t lv_font_montserrat_12;
+
+//Screen declaration
+static lv_obj_t *scrMenu;
+static lv_obj_t *scrWiFi;
+static lv_obj_t *scrLogin;
+static lv_obj_t *scrSettings;
+static lv_obj_t *scrPeminjaman;
+static lv_obj_t *scrTracking;
+
+/*	Global Object	*/
+//Background
+static lv_obj_t *bckTop;
+static lv_obj_t *bckMain;
+static lv_obj_t *bckBottom;
+
+//Button
+static lv_obj_t *btnBack;
+static lv_obj_t *btnHome;
+
+//Keyboard
+static lv_obj_t *keyboard;
+
+//Text Area
+lv_obj_t *textarea;
+
+//Style
+static lv_style_t styleTopBar;
+
+/*	Menu screen object	*/
+//Style
+static lv_style_t styleMenu;
+static lv_style_t styleBtnMenus;
+static lv_style_t styleBGMenus;
+static lv_style_t styleLabelSatpam;
+
+//Object
+static lv_obj_t *btnMenus;
+static lv_obj_t *lblNama;
+static lv_obj_t *lblNIP;
+
+/* WiFi screen object */
+
+//Object
+static lv_obj_t *listWiFi;
+static lv_obj_t *btnWiFis;
+static lv_obj_t *msgboxWiFi;
+
+//Style
+
+/*Login screen object*/
+//Object
+static lv_obj_t *msgboxLogin;
+static lv_obj_t *textareaUser;
+static lv_obj_t *textareaPassword;
+
+lv_obj_t * slider_label;
+int screenWidth = 480;
+int screenHeight = 320;
+  
+#if USE_LV_LOG != 0
+/* Serial debugging */
+void my_print(lv_log_level_t level, const char * file, uint32_t line, const char * dsc)
+{
+
+  Serial.printf("%s@%d->%s\r\n", file, line, dsc);
+  delay(100);
+}
+#endif
+
+void printEvent(String Event, lv_event_t event)
+{
+  
+  Serial.print(Event);
+  printf(" ");
+
+  switch(event) {
+      case LV_EVENT_PRESSED:
+          printf("Pressed\n");
+          break;
+
+      case LV_EVENT_SHORT_CLICKED:
+          printf("Short clicked\n");
+          break;
+
+      case LV_EVENT_CLICKED:
+          printf("Clicked\n");
+          break;
+
+      case LV_EVENT_LONG_PRESSED:
+          printf("Long press\n");
+          break;
+
+      case LV_EVENT_LONG_PRESSED_REPEAT:
+          printf("Long press repeat\n");
+          break;
+
+      case LV_EVENT_RELEASED:
+          printf("Released\n");
+          break;
+  }
+}
+
+void slider_event_cb(lv_obj_t * slider, lv_event_t event)
+{
+
+  printEvent("Slider", event);
+
+  if(event == LV_EVENT_VALUE_CHANGED) {
+      static char buf[4];                                 /* max 3 bytes  for number plus 1 null terminating byte */
+      snprintf(buf, 4, "%u", lv_slider_get_value(slider));
+      lv_label_set_text(slider_label, buf);               /*Refresh the text*/
+  }
+}
+/* Display flushing */
+void my_disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p)
+{
+  uint16_t c;
+
+  tft.startWrite(); /* Start new TFT transaction */
+  tft.setAddrWindow(area->x1, area->y1, (area->x2 - area->x1 + 1), (area->y2 - area->y1 + 1)); /* set the working window */
+  for (int y = area->y1; y <= area->y2; y++) {
+    for (int x = area->x1; x <= area->x2; x++) {
+      c = color_p->full;
+      tft.writeColor(c, 1);
+      color_p++;
+    }
+  }
+  tft.endWrite(); /* terminate TFT transaction */
+  lv_disp_flush_ready(disp); /* tell lvgl that flushing is done */
+}
+
+bool my_touchpad_read(lv_indev_drv_t * indev_driver, lv_indev_data_t * data)
+{
+    uint16_t touchX, touchY;
+
+    bool touched = tft.getTouch(&touchX, &touchY, 600);
+
+    if(!touched)
+    {
+      return false;
+    }
+
+    if(touchX>screenWidth || touchY > screenHeight)
+    {
+      Serial.println("Y or y outside of expected parameters..");
+      Serial.print("y:");
+      Serial.print(touchX);
+      Serial.print(" x:");
+      Serial.print(touchY);
+    }
+    else
+    {
+
+      data->state = touched ? LV_INDEV_STATE_PR : LV_INDEV_STATE_REL; 
+  
+      /*Save the state and save the pressed coordinate*/
+      //if(data->state == LV_INDEV_STATE_PR) touchpad_get_xy(&last_x, &last_y);
+     
+      /*Set the coordinates (if released use the last pressed coordinates)*/
+      data->point.x = touchX;
+      data->point.y = touchY;
+  
+      Serial.print("Data x");
+      Serial.println(touchX);
+      
+      Serial.print("Data y");
+      Serial.println(touchY);
+
+    }
+
+    return false; /*Return `false` because we are not buffering and no more data to read*/
+}
+
+bool initSPIFFS(){
+	if(!SPIFFS.begin(true)){
+		return false;
+	}
+	return true;
+}
+
+void Task_NFC(lv_task_t *task){
+  uint32_t *user_data = (uint32_t*)task->user_data;
+
+  if(nfc.tagPresent()){
+	  NfcTag tag = nfc.read();
+	  tag.print();
+  }
+}
+
+void setup() {
+  ledcSetup(10, 5000/*freq*/, 12 /*resolution*/);
+  ledcAttachPin(32, 10);
+  analogReadResolution(12);
+  ledcWrite(10, 819);
+
+  Serial.begin(115200); /* prepare for possible serial debug */
+
+  Serial.println("Init nfc...");
+  nfc.begin();
+
+  lv_init();
+
+  #if USE_LV_LOG != 0
+    lv_log_register_print_cb(my_print); /* register print function for debugging */
+  #endif
+
+  tft.begin(); /* TFT init */
+  tft.setRotation(3);
+
+  uint16_t calData[5] = { 275, 3620, 264, 3532, 1 };
+  tft.setTouch(calData);
+
+  lv_disp_buf_init(&disp_buf, buf, NULL, LV_HOR_RES_MAX * 10);
+
+  /*Initialize the display*/
+  lv_disp_drv_t disp_drv;
+  lv_disp_drv_init(&disp_drv);
+  disp_drv.hor_res = screenWidth;
+  disp_drv.ver_res = screenHeight;
+  disp_drv.flush_cb = my_disp_flush;
+  disp_drv.buffer = &disp_buf;
+  lv_disp_drv_register(&disp_drv);
+
+  /*Initialize the input device driver*/
+  lv_indev_drv_t indev_drv;
+  lv_indev_drv_init(&indev_drv);             /*Descriptor of a input device driver*/
+  indev_drv.type = LV_INDEV_TYPE_POINTER;    /*Touch pad is a pointer-like device*/
+  indev_drv.read_cb = my_touchpad_read;      /*Set your driver function*/
+  lv_indev_drv_register(&indev_drv);         /*Finally register the driver*/
+
+  //Set the theme..
+  lv_theme_t * th = lv_theme_material_init(LV_THEME_DEFAULT_COLOR_PRIMARY, LV_THEME_DEFAULT_COLOR_SECONDARY, LV_THEME_DEFAULT_FLAG, LV_THEME_DEFAULT_FONT_SMALL , LV_THEME_DEFAULT_FONT_NORMAL, LV_THEME_DEFAULT_FONT_SUBTITLE, LV_THEME_DEFAULT_FONT_TITLE);     
+  lv_theme_set_act(th);
+
+  lv_obj_t * scr = lv_cont_create(NULL, NULL);
+  lv_disp_load_scr(scr);
+
+  //lv_obj_t * tv = lv_tabview_create(scr, NULL);
+  //lv_obj_set_size(tv, lv_disp_get_hor_res(NULL), lv_disp_get_ver_res(NULL));
+  Serial.println("Mulai...");
+
+  static uint32_t user_data_nfc = 10;
+  lv_task_t *taskNFC = lv_task_create(Task_NFC, 5, LV_TASK_PRIO_HIGH, &user_data_nfc);
+
+  MenuScreen();
+
+}
+
+void loop() {
+  lv_task_handler(); /* let the GUI do its work */
+  delay(5);
+}
+
+void showObjTop() {
+	lv_style_init(&styleTopBar);
+	lv_style_set_bg_color(&styleTopBar, LV_STATE_DEFAULT, LV_COLOR_WHITE);
+	lv_style_set_opa_scale(&styleTopBar, LV_STATE_DEFAULT, LV_OPA_COVER);
+	lv_style_set_radius(&styleTopBar, LV_STATE_DEFAULT, 0);
+
+	bckTop = lv_obj_create(lv_scr_act(), NULL);
+	lv_obj_add_style(bckTop, LV_STATE_DEFAULT, &styleTopBar);
+	lv_obj_set_pos(bckTop, 0, 0);
+	lv_obj_set_height(bckTop, 30);
+	lv_obj_set_width(bckTop, 480);
+}
+
+void showObjMain() {
+	lv_style_init(&styleMenu);
+	lv_style_set_bg_color(&styleMenu, LV_STATE_DEFAULT, LV_COLOR_WHITE);
+	lv_style_set_opa_scale(&styleMenu, LV_STATE_DEFAULT, LV_OPA_COVER);
+	lv_style_set_radius(&styleMenu, LV_STATE_DEFAULT, 0);
+
+	bckMain = lv_obj_create(lv_scr_act(), NULL);
+	lv_obj_add_style(bckMain, LV_STATE_DEFAULT, &styleMenu);
+	lv_obj_set_pos(bckMain, 0, 30);
+	lv_obj_set_height(bckMain, 320 - lv_obj_get_height(bckTop) - 60);
+	lv_obj_set_width(bckMain, 480);
+}
+void showObjBottom() {
+	bckBottom = lv_obj_create(lv_scr_act(), NULL);
+	lv_obj_set_pos(bckBottom, 0, 260);
+	lv_obj_set_size(bckBottom, 480, 60);
+}
+
+
+static void Menu_cb(lv_obj_t* obj, lv_event_t event) {
+	if (event == LV_EVENT_VALUE_CHANGED && obj == btnMenus) {
+		uint16_t idBtn = lv_btnmatrix_get_active_btn(obj);
+
+		switch (idBtn) {
+		case 0:
+			WiFiScreen();
+			break;
+		case 1:
+			TrackingScreen();
+			break;
+		case 2:
+			PeminjamanScreen();
+			break;
+		case 3:
+			SettingsScreen();
+			break;
+		case 4:
+			LoginScreen();
+			break;
+		case 5:
+			LogoutScreen();
+			break;
+		}
+	}
+}
+
+static void WiFi_cb(lv_obj_t* obj, lv_event_t event) {
+	if (obj == btnBack && event == LV_EVENT_PRESSED) {
+		MenuScreen();
+	}
+	else if (event == LV_EVENT_CLICKED && lv_list_get_btn_index(listWiFi, btnWiFis) != NULL) {
+
+		msgboxWiFi = lv_msgbox_create(lv_scr_act(), NULL);
+		lv_obj_align(msgboxWiFi, NULL, LV_ALIGN_IN_TOP_MID, 0, 0);
+		lv_msgbox_set_text(msgboxWiFi, "Insert password");
+
+		textarea = lv_textarea_create(msgboxWiFi, NULL);
+		lv_obj_align(textarea, NULL, LV_ALIGN_CENTER, 0, 0);
+		//lv_obj_set_size(textarea, 200, 27);
+		lv_textarea_set_one_line(textarea, true);
+		lv_textarea_set_text(textarea, "");
+		lv_textarea_set_pwd_mode(textarea, true);
+		lv_textarea_set_pwd_show_time(textarea, 300);
+		lv_textarea_set_text_align(textarea, LV_LABEL_ALIGN_LEFT);
+
+		static const char* btns[] = { "Apply", "Cancel", "" };
+		lv_msgbox_add_btns(msgboxWiFi, btns);
+		lv_obj_set_event_cb(msgboxWiFi, WiFi_cb);
+
+		keyboard = lv_keyboard_create(lv_scr_act(), NULL);
+		lv_obj_set_size(keyboard, LV_HOR_RES, LV_VER_RES / 2);
+		lv_keyboard_set_textarea(keyboard, textarea);
+
+	}
+	else if (obj == msgboxWiFi && event == LV_EVENT_VALUE_CHANGED) {
+		if (lv_msgbox_get_active_btn(msgboxWiFi) == 0) {
+			const char *pass = lv_textarea_get_text(textarea);
+		}
+		lv_keyboard_set_textarea(keyboard, NULL);
+		lv_obj_del(keyboard);
+		lv_obj_del(msgboxWiFi);
+	}
+}
+
+static void Login_cb(lv_obj_t* obj, lv_event_t event) {
+	if ((obj == textareaUser || obj == textareaPassword) && event == LV_EVENT_CLICKED) {
+		lv_keyboard_set_textarea(keyboard, obj);
+		lv_textarea_set_cursor_hidden(obj, false);
+	}
+	else if (obj == msgboxLogin && event == LV_EVENT_VALUE_CHANGED) {
+		if (lv_msgbox_get_active_btn(msgboxLogin) == 0) printf("Username: %s\tPassword: %s\n", lv_textarea_get_text(textareaUser), lv_textarea_get_text(textareaPassword));
+		lv_keyboard_set_textarea(keyboard, NULL);
+		lv_obj_del(keyboard);
+		lv_obj_del(msgboxLogin);
+	}
+}
+
+void MenuScreen() {
+	lv_obj_clean(lv_scr_act());
+	scrMenu = lv_obj_create(NULL, NULL);
+	lv_scr_load(scrMenu);
+
+	showObjTop();
+	showObjMain();
+	showObjBottom();
+
+	lv_style_init(&styleBGMenus);
+	lv_style_set_opa_scale(&styleBGMenus, LV_STATE_DEFAULT, 0);
+
+	lv_style_init(&styleBtnMenus);
+	lv_style_set_opa_scale(&styleBtnMenus, LV_STATE_DEFAULT, LV_OPA_COVER);
+	lv_style_set_text_font(&styleBtnMenus, LV_STATE_DEFAULT, &FontKu14);
+
+	static const char *btnMenus_map[] = {
+		LV_SYMBOL_WIFI"\nWiFi", "\nTracking Satpam", LV_SYMBOL_HOME"\nPeminjaman Ruangan", "\n",
+		LV_SYMBOL_SETTINGS"\nSettings", "\nLogin Satpam", "\nLogout Satpam", "" };
+
+	btnMenus = lv_btnmatrix_create(bckMain, NULL);
+	lv_obj_add_style(btnMenus, LV_BTNMATRIX_PART_BG, &styleBGMenus);
+	lv_obj_add_style(btnMenus, LV_BTNMATRIX_PART_BTN, &styleBtnMenus);
+	lv_btnmatrix_set_map(btnMenus, btnMenus_map);
+	lv_obj_set_width(btnMenus, lv_obj_get_width(bckMain));
+	lv_obj_set_height(btnMenus, lv_obj_get_height(bckMain));
+	lv_obj_align(btnMenus, NULL, LV_ALIGN_CENTER, 0, 0);
+	lv_obj_set_event_cb(btnMenus, Menu_cb);
+
+	lv_style_init(&styleLabelSatpam);
+	//lv_style_set_text_font(&styleLabelSatpam, LV_STATE_DEFAULT, &lv_font_montserrat_12);
+
+	lblNama = lv_label_create(bckBottom, NULL);
+	lv_obj_add_style(lblNama, LV_LABEL_PART_MAIN, &styleLabelSatpam);
+	lv_obj_set_pos(lblNama, 0, 0);
+	lv_obj_set_size(lblNama, 480, 0);
+	lv_label_set_text(lblNama, "Nama Satpam: ");
+	
+	lblNIP = lv_label_create(bckBottom, NULL);
+	lv_obj_add_style(lblNIP, LV_LABEL_PART_MAIN, &styleLabelSatpam);
+	lv_obj_set_pos(lblNIP, 0, 20);
+	lv_obj_set_size(lblNIP, 480, 15);
+	lv_label_set_text(lblNIP, "NIP Satpam: ");
+}
+
+void WiFiScreen() {
+	lv_obj_clean(lv_scr_act());
+	scrWiFi = lv_obj_create(NULL, NULL);
+	lv_scr_load(scrWiFi);
+
+	showObjTop();
+	showObjMain();
+
+	listWiFi = lv_list_create(bckMain, NULL);
+	lv_obj_set_size(listWiFi, 480, 290);
+	lv_obj_align(listWiFi, NULL, LV_ALIGN_CENTER, 0, 0);
+
+	for (int i = 0; i < 35; i++) {
+		char txtFmt[20];
+		sprintf(txtFmt, "Wifi: %d", i);
+		
+		btnWiFis = lv_list_add_btn(listWiFi, LV_SYMBOL_WIFI, txtFmt);
+		lv_obj_set_event_cb(btnWiFis, WiFi_cb);
+	}
+
+	showObjBottom();
+	btnBack = lv_btn_create(bckBottom, NULL);
+	lv_obj_align(btnBack, NULL, LV_ALIGN_CENTER, 40, 0);
+	lv_btn_set_fit(btnBack, LV_FIT_TIGHT);
+	lv_obj_t* lblBack = lv_label_create(btnBack, NULL);
+	lv_label_set_text(lblBack, LV_SYMBOL_LEFT);
+
+	btnHome = lv_btn_create(bckBottom, NULL);
+	lv_obj_align(btnHome, NULL, LV_ALIGN_CENTER, -40, 0);
+	lv_btn_set_fit(btnHome, LV_FIT_TIGHT);
+	lv_obj_t* lblHome = lv_label_create(btnHome, NULL);
+	lv_label_set_text(lblHome, LV_SYMBOL_HOME);
+
+	lv_obj_set_event_cb(btnBack, WiFi_cb);
+}
+
+void TrackingScreen() {
+	lv_obj_clean(lv_scr_act());
+	scrTracking = lv_obj_create(NULL, NULL);
+	lv_scr_load(scrTracking);
+}
+
+void SettingsScreen() {
+	lv_obj_clean(lv_scr_act());
+	scrSettings = lv_obj_create(NULL, NULL);
+	lv_scr_load(scrSettings);
+}
+
+void LoginScreen() {
+	msgboxLogin = lv_msgbox_create(lv_scr_act(), NULL);
+
+	lv_obj_align(msgboxLogin, NULL, LV_ALIGN_IN_TOP_MID, 0, 0);
+	lv_msgbox_set_text(msgboxLogin, "Login");
+
+	textareaUser = lv_textarea_create(msgboxLogin, NULL);
+	lv_textarea_set_text(textareaUser, "Username");
+	lv_obj_align(textareaUser, NULL, LV_ALIGN_CENTER, 0, 0);
+	lv_textarea_set_one_line(textareaUser, true);
+	lv_textarea_set_text_align(textareaUser, LV_LABEL_ALIGN_LEFT);
+	lv_textarea_set_cursor_hidden(textareaUser, true);
+	lv_obj_set_event_cb(textareaUser, Login_cb);
+
+	textareaPassword = lv_textarea_create(msgboxLogin, NULL);
+	lv_textarea_set_text(textareaPassword, "Password");
+	lv_obj_align(textareaPassword, NULL, LV_ALIGN_CENTER, 0, 0);
+	lv_textarea_set_one_line(textareaPassword, true);
+	lv_textarea_set_pwd_mode(textareaPassword, true);
+	lv_textarea_set_pwd_show_time(textareaPassword, 1000);
+	lv_textarea_set_text_align(textareaPassword, LV_LABEL_ALIGN_LEFT);
+	lv_textarea_set_cursor_hidden(textareaPassword, true);
+	lv_obj_set_event_cb(textareaPassword, Login_cb);
+
+	static const char* btns[] = { "Apply", "Cancel", "" };
+	lv_msgbox_add_btns(msgboxLogin, btns);
+	lv_obj_set_event_cb(msgboxLogin, Login_cb);
+	//lv_obj_set_style_local_text_font(msgboxLogin, LV_OBJ_PART_MAIN, LV_STATE_DEFAULT, &lv_font_montserrat_12);
+
+	keyboard = lv_keyboard_create(lv_scr_act(), NULL);
+	lv_obj_set_size(keyboard, LV_HOR_RES, LV_VER_RES - lv_obj_get_height(msgboxLogin) + 20);
+	lv_obj_align(keyboard, NULL, LV_ALIGN_IN_BOTTOM_MID, 0, 0);
+	lv_keyboard_set_cursor_manage(keyboard, true);
+}
+
+void PeminjamanScreen() {
+	lv_obj_clean(lv_scr_act());
+	scrPeminjaman = lv_obj_create(NULL, NULL);
+	lv_scr_load(scrPeminjaman);
+}
+
+void LogoutScreen() {
+	static const char* btns[] = { "OK", "TIDAK", "" };
+
+	lv_obj_t *msgBox = lv_msgbox_create(lv_scr_act(), NULL);
+	lv_msgbox_set_text(msgBox, "Apakah anda yakin untuk Logout?");
+	lv_msgbox_add_btns(msgBox, btns);
+	lv_obj_set_width(msgBox, 200);
+	lv_obj_align(msgBox, NULL, LV_ALIGN_CENTER, 0, 0);
+}
